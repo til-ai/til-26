@@ -1,0 +1,12 @@
+checks:
+  - metric: "L2 (RMSE)"
+    op: le
+    threshold: 67
+
+  - metric: "L2 inside"
+    op: le
+    threshold: 50
+
+  - metric: "SSIM inside"
+    op: ge
+    threshold: 0.3

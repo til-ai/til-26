@@ -1,0 +1,6 @@
+[submodule "til-26-ae"]
+	path = til-26-ae
+	url = https://github.com/til-ai/til-26-ae.git
+[submodule "til-26-finals"]
+	path = til-26-finals
+	url = https://github.com/til-ai/til-26-finals.git
