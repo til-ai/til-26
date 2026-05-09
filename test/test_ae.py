@@ -3,7 +3,7 @@ import os
 
 import requests
 from dotenv import load_dotenv
-from til_environment import gridworld_v2
+from til_environment import bomberman_env
 from til_environment.config import default_config
 from tqdm import tqdm, trange
 
@@ -18,7 +18,7 @@ MAX_SCORE = 500
 def main(novice: bool):
     config = default_config()
     config.env.novice = novice
-    env = gridworld_v2.env_v2(env_wrappers=[], cfg=config)
+    env = bomberman_env.basic_env(env_wrappers=[], cfg=config)
     # be the agent at index 0
     _agent = env.possible_agents[0]
     rewards = {agent: 0 for agent in env.possible_agents}
