@@ -1,4 +1,5 @@
-# Dependencies for the OCR container.
+# Dependencies for the NLP container.
 
 fastapi==0.115.12
 uvicorn[standard]==0.34.2
+asyncio

@@ -12,7 +12,7 @@ TEAM_NAME = os.getenv("TEAM_NAME")
 TEAM_TRACK = os.getenv("TEAM_TRACK")
 
 NUM_ROUNDS = 6
-MAX_SCORE = 500
+MAX_SCORE = 1000
 
 
 def main(novice: bool):

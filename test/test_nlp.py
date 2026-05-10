@@ -8,7 +8,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
+from time import sleep
 import requests
 import torch
 import torch.nn.functional as F
@@ -28,7 +28,7 @@ load_dotenv()
 TEAM_NAME = os.getenv("TEAM_NAME")
 TEAM_TRACK = os.getenv("TEAM_TRACK")
 
-BATCH_SIZE = 32
+BATCH_SIZE = 4
 
 
 @dataclass
@@ -230,6 +230,29 @@ evaluator = AnswerEquivalenceEvaluator(
 )
 
 
+def poll_endpoint_for_loading(max_retries=None, delay_sec=10):
+    retry_num = 0
+    while max_retries is None or retry_num < max_retries:
+        try:
+            response = requests.post(
+                "http://localhost:5004/nlp",
+                data=json.dumps({"instances": [{"poll": "true"}]}),
+            ).json()["predictions"]
+            if len(response) == 1 and response[0] == "loaded":
+                print("Model server is loaded.")
+                return True
+            elif len(response) == 1 and response[0] == "error":
+                print("Model server is reporting an error.")
+                return False
+            elif len(response) == 1 and response[0] == "loading":
+                print(f"Retry {retry_num}: Model server is still loading the corpus.")
+        except Exception as e:
+            print(f"Error occurred while polling endpoint: {e}")
+        sleep(delay_sec)
+        retry_num += 1
+    return False
+
+
 def sample_generator(
     instances: Sequence[Mapping[str, Any]],
 ) -> Iterator[Mapping[str, Any]]:
@@ -272,9 +295,14 @@ def main():
     )
 
     # verify response to make sure server is healthy and loaded the corpus
-    if response.status_code != 200 or not response.json()["predictions"][0] == "loaded":
+    if response.status_code != 200 or response.json()["predictions"][0] == "error":
         logger.error(f"Failed to load corpus: {response.text}")
         return
+    elif response.status_code == 200 or response.json()["predictions"][0] == "loading":
+        logger.info("Corpus load initiated, polling for completion...")
+        if not poll_endpoint_for_loading(max_retries=30, delay_sec=10):
+            logger.error("Corpus failed to load within expected time.")
+            return
     else:
         logger.info("Corpus loaded successfully, proceeding with QA evaluation")
 

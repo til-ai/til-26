@@ -1,49 +1,70 @@
 """Runs the NLP server."""
 
-# Unless you want to do something special with the server, you shouldn't need
-# to change anything in this file.
-
+import asyncio
+import logging
+from typing import Optional
 
 from fastapi import FastAPI, Request
 from nlp_manager import NLPManager
 
 app = FastAPI()
 manager = NLPManager()
+logger = logging.getLogger(__name__)
+
+
+class _LoadState:
+    """Tracks corpus-loading state for async, pollable behavior."""
+
+    def __init__(self) -> None:
+        self.status: str = "idle"  # idle | loading | loaded | failed
+        self.error: Optional[str] = None
+        self.task: Optional[asyncio.Task] = None
+        self.lock = asyncio.Lock()
+
+
+load_state = _LoadState()
+
+
+def _do_load(documents) -> bool:
+    """Synchronous corpus load. Runs on a worker thread."""
+    manager.load_corpus(documents)
+    return manager.loaded
+
+
+async def _load_task(documents) -> None:
+    try:
+        ok = await asyncio.to_thread(_do_load, documents)
+        load_state.status = "loaded" if ok else "failed"
+    except Exception as e:
+        logger.exception("Corpus load failed")
+        load_state.status = "failed"
+        load_state.error = str(e)
 
 
 @app.post("/nlp")
 async def nlp(request: Request) -> dict[str, list[str]]:
-    """Performs NLP RAG QA tasks.
-
-    Args:
-        request: The API request. Contains a list of questions.
-
-    Returns:
-        A `dict` with a single key, `"predictions"`, mapping to a `list` of
-        `str` answers, in the same order as which appears in `request`.
-    """
-
     inputs_json = await request.json()
+    first = inputs_json["instances"][0]
 
-    # Load the corpus if it hasn't been loaded yet
-    if not manager.loaded and inputs_json["instances"][0].get("documents") is not None:
-        manager.load_corpus(inputs_json["instances"][0]["documents"])
-        return {"predictions": ["loaded" if manager.loaded else "failed"]}
+    # Load: any request carrying `documents` kicks off the load.
+    if first.get("documents") is not None:
+        async with load_state.lock:
+            if load_state.status == "idle":
+                load_state.status = "loading"
+                load_state.task = asyncio.create_task(_load_task(first["documents"]))
+            return {"predictions": [load_state.status]}
+    # Poll: returns current status (subsequent polls).
+    if first.get("poll") is not None:
+        return {"predictions": [load_state.status]}
 
-    predictions = []
-    for instance in inputs_json["instances"]:
-
-        # Reads the question from the request.
-        question = instance["question"]
-
-        # Performs NLP QA and appends the result.
-        answer = manager.qa(question)
-        predictions.append(answer)
+    predictions = [
+        await asyncio.to_thread(manager.qa, instance["question"])
+        for instance in inputs_json["instances"]
+    ]
 
     return {"predictions": predictions}
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    """Health check endpoint for your model."""
     return {"message": "health ok"}
