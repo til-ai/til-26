@@ -224,9 +224,10 @@ class AnswerEquivalenceEvaluator:
 
 
 evaluator = AnswerEquivalenceEvaluator(
-    model_path=f"./test/models/nlp_eval",
+    model_path=f"./test/models/nlp_eval_512",
     threshold=0.5,
     device=None,
+    max_length=512,
 )
 
 
