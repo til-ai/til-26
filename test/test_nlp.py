@@ -7,8 +7,10 @@ import zipfile
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from string import printable
 from time import sleep
+from typing import Any
+
 import requests
 import torch
 import torch.nn.functional as F
@@ -29,19 +31,21 @@ TEAM_NAME = os.getenv("TEAM_NAME")
 TEAM_TRACK = os.getenv("TEAM_TRACK")
 
 BATCH_SIZE = 4
+RETRIEVAL_ONLY_SCORE = 0.4
+MAX_CANDIDATE_TOKEN_LENGTH = 64
 
 
 @dataclass
 class AEResult:
     index: int
+    score: float
     equivalent: bool
-    confidence: float
     prob_equivalent: float
 
     def to_dict(self) -> dict:
         return {
+            "score": round(self.score, 4),
             "equivalent": self.equivalent,
-            "confidence": self.confidence,
             "prob_equivalent": round(self.prob_equivalent, 4),
         }
 
@@ -109,39 +113,24 @@ class AnswerEquivalenceEvaluator:
         logger.info(f"Model loaded: {n_params:,} parameters")
 
     def _format_input(self, question: str, reference: str, candidate: str) -> str:
+        _printable = "".join(filter(lambda x: x in printable, candidate))
+
+        # truncate to required max length, then re-encode as text
+        tokens = self.tokenizer.tokenize(
+            _printable, max_length=MAX_CANDIDATE_TOKEN_LENGTH, truncation=True
+        )
+        reconstructed_candidate = self.tokenizer.convert_tokens_to_string(tokens)
+
         return (
             f"Question: {question} "
             f"Reference: {reference} "
-            f"Candidate: {candidate}"
-        )
-
-    @torch.no_grad()
-    def __call__(self, question: str, reference: str, candidate: str) -> AEResult:
-        """Score a single (question, reference, candidate) triple."""
-        text = self._format_input(question, reference, candidate)
-        encoding = self.tokenizer(
-            text,
-            max_length=self.max_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-        ).to(self.device)
-
-        logits = self.model(**encoding).logits
-        probs = F.softmax(logits, dim=-1).squeeze(0)
-        prob_eq = probs[1].item()
-
-        return AEResult(
-            index=0,
-            equivalent=prob_eq >= self.threshold,
-            confidence=max(prob_eq, 1 - prob_eq),
-            prob_equivalent=prob_eq,
+            f"Candidate: {reconstructed_candidate}"
         )
 
     @torch.no_grad()
     def batch_evaluate(
         self,
-        triples: list[tuple[str, str, str]],
+        data: list[tuple[list[str], list[str], str, str, str]],
         batch_size: int = 64,
     ) -> list[AEResult]:
         """
@@ -153,21 +142,43 @@ class AnswerEquivalenceEvaluator:
         empty_str_results = []
         non_empty_indexed_triples = []
 
-        for i, (q, r, c) in enumerate(triples):
-            if r == "" or c == "":
+        for i, (docs, pred_docs, q, r, c) in enumerate(data):
+            overlap_docs = len(set(docs).intersection(set(pred_docs))) >= 1
+            if len(docs) == 0 and len(pred_docs) == 0 and r == "" and c == "":
+                # all empty = L4; mark correct
                 empty_str_results.append(
                     AEResult(
                         index=i,
-                        equivalent=(r == c),
-                        confidence=1.0,
-                        prob_equivalent=1.0 if r == c else 0.0,
+                        score=1.0,
+                        equivalent=True,
+                        prob_equivalent=1.0,
                     )
                 )
-            else:
+            elif (r == "" or c == "") and overlap_docs:
+                # L5: requires document overlap + empty string due to false premise
+                _equivalent = r == c
+                empty_str_results.append(
+                    AEResult(
+                        index=i,
+                        score=1.0 if _equivalent else RETRIEVAL_ONLY_SCORE,
+                        equivalent=_equivalent,
+                        prob_equivalent=1.0 if _equivalent else 0.0,
+                    )
+                )
+            elif overlap_docs:
+                # if there's at least one top3 overlap between the documents, go to next stage
                 non_empty_indexed_triples.append((i, q, r, c))
-
-        # otherwise, pass the rest onto the model as usual
-
+            else:
+                # document retrieval failure, no points
+                empty_str_results.append(
+                    AEResult(
+                        index=i,
+                        score=0.0,
+                        equivalent=False,
+                        prob_equivalent=0.0,
+                    )
+                )
+        # pass the rest onto the model for evaluation
         texts = [
             (i, self._format_input(q, r, c)) for i, q, r, c in non_empty_indexed_triples
         ]
@@ -188,11 +199,12 @@ class AnswerEquivalenceEvaluator:
 
             for prob_idx, prob in enumerate(probs):
                 prob_eq = prob[1].item()
+                _equivalent = prob_eq >= self.threshold
                 all_results.append(
                     AEResult(
                         index=batch_indices[prob_idx],
-                        equivalent=prob_eq >= self.threshold,
-                        confidence=max(prob_eq, 1 - prob_eq),
+                        score=1.0 if _equivalent else RETRIEVAL_ONLY_SCORE,
+                        equivalent=_equivalent,
                         prob_equivalent=prob_eq,
                     )
                 )
@@ -209,15 +221,21 @@ class AnswerEquivalenceEvaluator:
         """
         n = len(results)
         if n == 0:
-            return {"n": 0, "equiv_rate": 0.0, "mean_prob": 0.0}
+            return {
+                "n": 0,
+                "equiv_rate": 0.0,
+                "mean_prob": 0.0,
+                "equivalent_count": 0,
+                "not_equivalent_count": 0,
+            }
 
-        equiv_count = sum(1 for r in results if r.equivalent)
+        equiv_count = sum(r.score for r in results)
         mean_prob = sum(r.prob_equivalent for r in results) / n
 
         return {
             "n": n,
-            "equiv_rate": round(equiv_count / n, 4),
-            "mean_prob": round(mean_prob, 4),
+            "equiv_rate": round(equiv_count / n, 3),
+            "mean_prob": round(mean_prob, 3),
             "equivalent_count": equiv_count,
             "not_equivalent_count": n - equiv_count,
         }
@@ -225,7 +243,7 @@ class AnswerEquivalenceEvaluator:
 
 evaluator = AnswerEquivalenceEvaluator(
     model_path=f"./test/models/nlp_eval_512",
-    threshold=0.5,
+    threshold=0.9,
     device=None,
     max_length=512,
 )
@@ -239,13 +257,13 @@ def poll_endpoint_for_loading(max_retries=None, delay_sec=10):
                 "http://localhost:5004/nlp",
                 data=json.dumps({"instances": [{"poll": "true"}]}),
             ).json()["predictions"]
-            if len(response) == 1 and response[0] == "loaded":
+            if len(response) == 1 and response[0].get("status") == "loaded":
                 print("Model server is loaded.")
                 return True
-            elif len(response) == 1 and response[0] == "error":
+            elif len(response) == 1 and response[0].get("status") == "error":
                 print("Model server is reporting an error.")
                 return False
-            elif len(response) == 1 and response[0] == "loading":
+            elif len(response) == 1 and response[0].get("status") == "loading":
                 print(f"Retry {retry_num}: Model server is still loading the corpus.")
         except Exception as e:
             print(f"Error occurred while polling endpoint: {e}")
@@ -261,14 +279,24 @@ def sample_generator(
         yield {"question": instance["question"]}
 
 
-def score_nlp(preds: Sequence[str], ground_truth: Sequence[Mapping[str, Any]]) -> float:
-    triples = []
+def score_nlp(
+    preds: Sequence[dict[str, list[str] | str]],
+    ground_truth: Sequence[Mapping[str, Any]],
+) -> float:
+    data = []
+
     for pred, gt in zip(preds, ground_truth):
-        triples.append(
-            (gt["question"], gt["answer"] if gt["answer"] is not None else "", pred)
+        data.append(
+            (
+                gt["source_docs"],
+                pred["documents"][:3],
+                gt["question"],
+                gt["answer"] if gt["answer"] is not None else "",
+                pred["answer"],
+            )
         )
 
-    results = evaluator.batch_evaluate(triples)
+    results = evaluator.batch_evaluate(data)
     summary = evaluator.aggregate_score(results)
     logger.info(f"Answer Equivalence Evaluation Summary: {summary}")
     return summary["equiv_rate"]
@@ -296,10 +324,16 @@ def main():
     )
 
     # verify response to make sure server is healthy and loaded the corpus
-    if response.status_code != 200 or response.json()["predictions"][0] == "error":
+    if (
+        response.status_code != 200
+        or response.json()["predictions"][0].get("status") == "error"
+    ):
         logger.error(f"Failed to load corpus: {response.text}")
         return
-    elif response.status_code == 200 or response.json()["predictions"][0] == "loading":
+    elif (
+        response.status_code == 200
+        or response.json()["predictions"][0].get("status") == "loading"
+    ):
         logger.info("Corpus load initiated, polling for completion...")
         if not poll_endpoint_for_loading(max_retries=30, delay_sec=10):
             logger.error("Corpus failed to load within expected time.")
@@ -309,7 +343,7 @@ def main():
 
     batch_generator = batched(sample_generator(instances), n=BATCH_SIZE)
 
-    results = []
+    results: list[dict[str, list[str] | str]] = []
     for batch in tqdm(batch_generator, total=math.ceil(len(instances) / BATCH_SIZE)):
         response = requests.post(
             "http://localhost:5004/nlp",
@@ -327,7 +361,7 @@ def main():
         json.dump(results, results_file)
 
     score = score_nlp(results, instances)
-    print("QA Accuracy:", score)
+    print("NLP RAG QA Accuracy:", score)
 
 
 if __name__ == "__main__":

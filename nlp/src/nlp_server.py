@@ -42,7 +42,7 @@ async def _load_task(documents) -> None:
 
 
 @app.post("/nlp")
-async def nlp(request: Request) -> dict[str, list[str]]:
+async def nlp(request: Request) -> dict[str, list[dict[str, list[str] | str]]]:
     inputs_json = await request.json()
     first = inputs_json["instances"][0]
 
@@ -52,10 +52,10 @@ async def nlp(request: Request) -> dict[str, list[str]]:
             if load_state.status == "idle":
                 load_state.status = "loading"
                 load_state.task = asyncio.create_task(_load_task(first["documents"]))
-            return {"predictions": [load_state.status]}
+            return {"predictions": [{"status": load_state.status}]}
     # Poll: returns current status (subsequent polls).
     if first.get("poll") is not None:
-        return {"predictions": [load_state.status]}
+        return {"predictions": [{"status": load_state.status}]}
 
     predictions = [
         await asyncio.to_thread(manager.qa, instance["question"])

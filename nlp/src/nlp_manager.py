@@ -15,17 +15,19 @@ class NLPManager:
         # TODO
         self.loaded = True
 
-    def qa(self, question: str) -> str:
+    def qa(self, question: str) -> dict[str, list[str] | str]:
         """Performs question answering on an image of a document.
 
         Args:
             question: The question to answer.
 
         Returns:
-            A string containing the answer to the question.
+            A dictionary with two keys:
+            - "documents": list of strings containing the most relevant document ids. Only the first 3 will be considered
+            - "answer": string containing the answer to the question.
         """
 
         # Your inference code goes here.
         # TODO
 
-        return ""
+        return {"documents": [], "answer": ""}
