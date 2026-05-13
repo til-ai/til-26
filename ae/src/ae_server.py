@@ -26,25 +26,14 @@ async def ae(request: Request) -> dict[str, list[dict[str, int]]]:
     for instance in input_json["instances"]:
         observation = instance["observation"]
         # reset environment on a new round
-        if observation["step"] == 0:
-            await reset({})
+        # You will have to do your own internal counting and reset your own system between rounds!
+        # if observation["step"] == 0:
+            # do internal resetting here
         predictions.append({"action": manager.ae(observation)})
     return {"predictions": predictions}
 
 
-@app.post("/reset")
-async def reset(_: Request) -> None:
-    """Resets the `AEManager` for a new round."""
-
-    # The Docker container is not restarted between rounds (during Qualifiers).
-    # Your model is reset via this endpoint by creating a new instance. You
-    # should avoid storing persistent state information outside your
-    # `AEManager` instance; but if you must, you should also reset it here.
-
-    global manager  # pylint: disable=global-statement
-    manager = AEManager()
-
-    return
+# ------------------------------ RESET REMOVED ------------------------------
 
 
 @app.get("/health")
