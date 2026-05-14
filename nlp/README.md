@@ -12,8 +12,8 @@ To load the test corpus, the first request sent to your endpoint will be of the 
   "instances": [
     {
       "documents": [
-        "Text of document one.",
-        "Text of document two.",
+        {"id": "DOC-0001", "document": "Text of document one."},
+        {"id": "DOC-0002", "document": "Text of document two."},
         ...
       ]
     }
@@ -25,7 +25,7 @@ This is expected to be parsed by your NLP RAG QA system to be used as context fo
 
 ```JSON
 {
-  "predictions": ["loaded"]
+  "predictions": [{"status": "loaded"}]
 }
 ```
 

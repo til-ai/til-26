@@ -317,7 +317,11 @@ def main():
     for doc_file in documents_dir.glob("*.txt"):
         with open(doc_file, "r") as f:
             content = f.read()
-            doc_contents.append(content)
+            doc = {
+                "id": doc_file.stem,
+                "document": content,
+            }
+            doc_contents.append(doc)
     response = requests.post(
         "http://localhost:5004/nlp",
         data=json.dumps({"instances": [{"documents": doc_contents}]}),

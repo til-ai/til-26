@@ -9,7 +9,7 @@ class NLPManager:
         # TODO
         pass
 
-    def load_corpus(self, documents: list[str]) -> None:
+    def load_corpus(self, documents: list[dict[str, str]]) -> None:
         """Loads the corpus of documents for RAG QA."""
         # Your corpus loading code goes here.
         # TODO
